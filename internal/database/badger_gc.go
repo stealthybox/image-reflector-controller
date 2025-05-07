@@ -16,61 +16,61 @@ limitations under the License.
 package database
 
 import (
+	"context"
 	"errors"
-	"sync"
 	"time"
 
 	"github.com/dgraph-io/badger/v3"
 	"github.com/go-logr/logr"
+	ctrl "sigs.k8s.io/controller-runtime"
 )
 
+// BadgerGarbageCollector implements controller runtime's Runnable
 type BadgerGarbageCollector struct {
-	// settings
+	// DiscardRatio must be a float between 0.0 and 1.0, inclusive
+	// See badger.DB.RunValueLogGC for more info
 	DiscardRatio float64
 	Interval     time.Duration
-	// external deps
-	db  *badger.DB
-	log *logr.Logger
-	// flow control
-	timer   *time.Timer
-	running sync.Mutex
+
+	name string
+	db   *badger.DB
+	log  logr.Logger
 }
 
-// NewBadgerGarbageCollector creates and returns a new
-func NewBadgerGarbageCollector(db *badger.DB, interval time.Duration, log *logr.Logger) *BadgerGarbageCollector {
+// NewBadgerGarbageCollector creates and returns a new BadgerGarbageCollector
+func NewBadgerGarbageCollector(name string, db *badger.DB, interval time.Duration, discardRatio float64) *BadgerGarbageCollector {
 	return &BadgerGarbageCollector{
-		DiscardRatio: 0.5, // must be a float between 0.0 and 1.0, inclusive
+		DiscardRatio: discardRatio,
 		Interval:     interval,
 
-		db:  db,
-		log: log,
+		name: name,
+		db:   db,
 	}
 }
 
 // Start repeatedly runs the BadgerDB garbage collector with a delay inbetween
 // runs.
 //
-// This is a non-blocking operation.
-// To stop the garbage collector, call Stop().
-func (gc *BadgerGarbageCollector) Start() {
-	gc.log.Info("Starting Badger GC")
-	gc.timer = time.AfterFunc(gc.Interval, func() {
-		gc.running.Lock()
-		gc.discardValueLogFiles()
-		gc.running.Unlock()
-		gc.timer.Reset(gc.Interval)
-	})
-}
-
-// Stop blocks until the garbage collector has been stopped.
+// Start blocks until the context is cancelled. The database is expected to
+// already be open and not be closed while this context is active.
 //
-// To avoid GC Errors, call Stop() before closing the database.
-func (gc *BadgerGarbageCollector) Stop() {
-	gc.log.Info("Sending stop to Badger GC")
-	gc.timer.Stop()
-	gc.running.Lock()
-	gc.running.Unlock()
-	gc.log.Info("Stopped Badger GC")
+// ctx should be a logr.Logger context.
+func (gc *BadgerGarbageCollector) Start(ctx context.Context) error {
+	gc.log = ctrl.LoggerFrom(ctx).WithName(gc.name)
+
+	gc.log.Info("Starting Badger GC")
+	timer := time.NewTimer(gc.Interval)
+	for {
+		select {
+		case <-timer.C:
+			gc.discardValueLogFiles()
+			timer.Reset(gc.Interval)
+		case <-ctx.Done():
+			timer.Stop()
+			gc.log.Info("Stopped Badger GC")
+			return nil
+		}
+	}
 }
 
 // upper bound for loop

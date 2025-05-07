@@ -61,7 +61,6 @@ const controllerName = "image-reflector-controller"
 var (
 	scheme   = runtime.NewScheme()
 	setupLog = ctrl.Log.WithName("setup")
-	gcLog    = ctrl.Log.WithName("badger-gc")
 )
 
 func init() {
@@ -135,11 +134,8 @@ func main() {
 	}
 	defer badgerDB.Close()
 
-	badgerGC := database.NewBadgerGarbageCollector(badgerDB, 1*time.Minute, &gcLog)
-	badgerGC.Start()
-	defer badgerGC.Stop()
-
 	db := database.NewBadgerDatabase(badgerDB)
+	badgerGC := database.NewBadgerGarbageCollector("badger-gc", badgerDB, 1*time.Minute, 0.7)
 
 	watchNamespace := ""
 	if !watchOptions.AllNamespaces {
@@ -211,6 +207,8 @@ func main() {
 		setupLog.Error(err, "unable to start manager")
 		os.Exit(1)
 	}
+
+	mgr.Add(badgerGC)
 
 	probes.SetupChecks(mgr, setupLog)
 
